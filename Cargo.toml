@@ -1,0 +1,67 @@
+[package]
+name = "emoji-archive"
+version = "0.1.0"
+edition = "2021"
+description = "本地表情包管理器"
+
+[build-dependencies]
+# 把 .ico 资源编译进 Windows exe
+embed-resource = "3"
+
+[dependencies]
+eframe = { version = "0.37", features = ["persistence"] }
+# SQLite（bundled 自带编译，不依赖系统库）
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 原生文件选择对话框（导入字体/表情包用）
+rfd = "0.15"
+# 图片解码 + 缩略图 + 动图逐帧
+# 只开需要的格式，减少编译量
+image = { version = "0.25", default-features = false, features = [
+    "gif",
+    "png",
+    "jpeg",
+    "webp",
+] }
+# 窗口不透明度需要直接调 Win32（egui 没有 opacity 命令）
+raw-window-handle = "0.6"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    # 剪贴板写入文件（CF_HDROP）
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    # OLE 拖放（原生拖出，默认未启用）
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell_Common",
+    # 拖动预览图（DIB / HBITMAP）
+    "Win32_Graphics_Gdi",
+    # 判断左键是否真的松开
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+# #[implement] 宏生成的代码会引用 windows_core
+windows-core = "0.62"
+pinyin = "0.11.0"
+# ZIP 导入导出（只开 deflate，避免编译 zstd/bzip2/lzma）
+zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
+# 导出 data.json
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# 导出文件名/时间戳
+chrono = "0.4.45"
+
+[profile.dev]
+opt-level = 1
+# 关闭调试信息：bundled SQLite 编译参数过多，
+# 带 -Z7 会让命令行超过 Windows 长度限制（cl.exe D8050）
+debug = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
