@@ -1,6 +1,6 @@
 [package]
 name = "emoji-archive"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "本地表情包管理器"
 
