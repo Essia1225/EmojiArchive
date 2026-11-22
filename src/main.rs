@@ -106,6 +106,50 @@ pub struct AppState {
     pub search_cache: core::search::SearchCache,
     /// 设置里点了「更改数据目录」，由 App 层打开原生文件夹对话框
     pub change_data_dir_requested: bool,
+    /// 图片总数（侧栏「全部」的计数）
+    pub total_count: i64,
+    /// 未分类图片数（侧栏「未分类」的计数）
+    pub uncategorized_count: i64,
+    /// 滚轮滚动速度（倍率，1.0 = egui 默认；默认 1.6 比原生快一点）
+    pub scroll_speed: f32,
+    /// 正在被拖动的分类 id（侧栏拖动排序）
+    pub category_drag: Option<i64>,
+    /// 拖动分类时的目标插入位置（0..=分类数）
+    pub category_drop_index: Option<usize>,
+    /// 分类行拖动排序时的动画偏移（id -> 当前 y 偏移），用于其他行平滑让位
+    pub category_offsets: std::collections::HashMap<i64, f32>,
+    /// 侧栏宽度占窗口宽度的比例（默认 0.2 ≈ 1:4，可拖分隔线调整）
+    pub sidebar_ratio: f32,
+    /// Ctrl+Z 撤销栈：只记录「分类归属变更」（内存中，重启清空，最多 50 步）
+    pub undo_stack: Vec<CategoryUndo>,
+    /// 全局唤出快捷键（预设名，如 "Alt+`"）
+    pub hotkey: String,
+    /// 点关闭时收进托盘而不是退出
+    pub minimize_to_tray: bool,
+    /// 窗口当前是否被收进托盘（隐藏）
+    pub window_hidden: bool,
+    /// 设置独立窗口的「首帧」标记：immediate viewport 刚创建时 close_requested 可能为 true
+    pub settings_first_frame: bool,
+    /// 设置窗口最近一次的位置（下次打开沿用，避免每次出现在随机位置）
+    pub settings_pos: Option<egui::Pos2>,
+    /// 刚打开设置窗口：本帧要把保存的位置应用到新窗口
+    pub settings_open_fresh: bool,
+    /// 设置窗口已按目标位置创建、还要再等几帧才显示（避免闪一下）
+    pub settings_pending_show: u8,
+    /// 设置窗口的 viewport 是否已经创建过（常驻不销毁）
+    pub settings_viewport_created: bool,
+    /// 本次打开还没真正显示过（等隐藏渲染两帧后再显示）
+    pub settings_need_show: bool,
+    /// 主窗口矩形（用来把设置窗口默认放在主窗口右侧）
+    pub main_rect: Option<egui::Rect>,
+    /// 快捷键是否注册成功（None = 还没试过；Some(false) = 组合非法/被占用）
+    pub hotkey_valid: Option<bool>,
+}
+
+/// 一次「分类归属变更」之前的快照，用于 Ctrl+Z 撤销。
+pub struct CategoryUndo {
+    /// emoji_id -> 变更前的分类 id 列表
+    pub before: Vec<(i64, Vec<i64>)>,
 }
 
 impl Default for AppState {
@@ -152,6 +196,25 @@ impl Default for AppState {
             batch_box_rect: None,
             search_cache: core::search::SearchCache::default(),
             change_data_dir_requested: false,
+            total_count: 0,
+            uncategorized_count: 0,
+            scroll_speed: 1.6,
+            category_drag: None,
+            category_drop_index: None,
+            category_offsets: std::collections::HashMap::new(),
+            sidebar_ratio: 0.2,
+            undo_stack: Vec::new(),
+            hotkey: "Alt+`".to_owned(),
+            minimize_to_tray: true,
+            window_hidden: false,
+            settings_first_frame: true,
+            settings_pos: None,
+            settings_open_fresh: false,
+            settings_pending_show: 0,
+            settings_viewport_created: false,
+            settings_need_show: false,
+            main_rect: None,
+            hotkey_valid: None,
         }
     }
 }
@@ -203,6 +266,9 @@ pub struct SavedUi {
     pub radius: f32,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+    /// 滚轮滚动速度（倍率，1.0 = egui 默认；默认 1.6 比原生快一点）
+    #[serde(default = "default_scroll_speed")]
+    pub scroll_speed: f32,
     #[serde(default = "default_true")]
     pub show_names: bool,
     #[serde(default = "default_true")]
@@ -212,6 +278,15 @@ pub struct SavedUi {
     pub font_path: Option<String>,
     #[serde(default)]
     pub font_name: Option<String>,
+    /// 全局唤出快捷键的预设名
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
+    /// 点关闭时收进托盘
+    #[serde(default = "default_true")]
+    pub minimize_to_tray: bool,
+    /// 设置窗口位置（像素）
+    #[serde(default)]
+    pub settings_pos: Option<[f32; 2]>,
 }
 
 fn default_opacity() -> f32 {
@@ -226,6 +301,13 @@ fn default_font_size() -> f32 {
 fn default_true() -> bool {
     true
 }
+/// 滚轮速度默认比 egui 原生快一点（用户要求「默认灵敏度比现在快一点」）
+fn default_scroll_speed() -> f32 {
+    1.6
+}
+fn default_hotkey() -> String {
+    "Alt+`".to_owned()
+}
 
 impl Default for SavedUi {
     fn default() -> Self {
@@ -234,10 +316,14 @@ impl Default for SavedUi {
             opacity: default_opacity(),
             radius: default_radius(),
             font_size: default_font_size(),
+            scroll_speed: default_scroll_speed(),
             show_names: true,
             edge_snap: true,
             font_path: None,
             font_name: None,
+            hotkey: default_hotkey(),
+            minimize_to_tray: true,
+            settings_pos: None,
         }
     }
 }
@@ -249,6 +335,7 @@ fn snapshot_ui(state: &AppState) -> SavedUi {
         opacity: state.opacity,
         radius: state.corner_radius,
         font_size: state.font_size,
+        scroll_speed: state.scroll_speed,
         show_names: state.show_names,
         edge_snap: state.edge_snap,
         font_path: state
@@ -257,6 +344,9 @@ fn snapshot_ui(state: &AppState) -> SavedUi {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         font_name: Some(state.font.display_name.clone()),
+        hotkey: state.hotkey.clone(),
+        minimize_to_tray: state.minimize_to_tray,
+        settings_pos: state.settings_pos.map(|p| [p.x, p.y]),
     }
 }
 
@@ -290,6 +380,27 @@ pub struct App {
     pub saved_ui: SavedUi,
     /// 界面设置从什么时刻开始变脏（稳定 0.5s 后再写库，避免拖滑块时每帧写一次）
     pub ui_dirty_since: Option<f64>,
+    /// 托盘图标是否已安装（只装一次）
+    pub tray_installed: bool,
+    /// 托盘图标是否真的添加成功（失败时不能收进托盘，否则叫不回来）
+    pub tray_ok: bool,
+    /// 全局快捷键是否注册成功（热键可用时即使托盘图标不可用，也能隐藏后唤回）
+    pub hotkey_ok: bool,
+    /// 主窗口句柄（isize 存着，托盘清理/热键重注册要用）
+    pub hwnd: Option<isize>,
+    /// 用户从托盘菜单点了「退出」：下次关闭请求要真正退出，而不是收进托盘
+    pub quit_requested: bool,
+}
+
+/// 从 eframe 的 Frame 取主窗口 HWND（托盘/热键要用）。
+#[cfg(windows)]
+fn window_hwnd(frame: &eframe::Frame) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = frame.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
+        _ => None,
+    }
 }
 
 impl App {
@@ -346,6 +457,12 @@ impl App {
         state.opacity = saved_ui.opacity.clamp(0.3, 1.0);
         state.corner_radius = saved_ui.radius.clamp(0.0, 16.0);
         state.font_size = saved_ui.font_size.clamp(10.0, 24.0);
+        state.scroll_speed = saved_ui.scroll_speed.clamp(0.5, 4.0);
+        state.hotkey = saved_ui.hotkey.clone();
+        state.minimize_to_tray = saved_ui.minimize_to_tray;
+        state.settings_pos = saved_ui
+            .settings_pos
+            .map(|p| egui::pos2(p[0], p[1]));
         state.show_names = saved_ui.show_names;
         state.edge_snap = saved_ui.edge_snap;
         // 欢迎公告：读软件根目录的 welcome.txt（不存在会自动生成模板）
@@ -392,7 +509,7 @@ impl App {
             .map(|storage| storage.get_string("window").is_none())
             .unwrap_or(false);
 
-        Self {
+        let mut app = Self {
             state,
             conn,
             snap_installed: false,
@@ -400,7 +517,15 @@ impl App {
             applied_style: Some((saved_ui.palette, saved_ui.radius, saved_ui.font_size)),
             saved_ui,
             ui_dirty_since: None,
-        }
+            tray_installed: false,
+            tray_ok: false,
+            hotkey_ok: false,
+            hwnd: None,
+            quit_requested: false,
+        };
+        // 首屏就要显示「全部 / 未分类」的计数，这里先按库里的真实数据算一遍
+        app.reload_categories();
+        app
     }
 
     /// 立即把界面设置写库（不等防抖）。退出和自动保存时调用。
@@ -443,9 +568,14 @@ impl App {
         }
     }
 
-    /// 重新从数据库加载分类列表
-    pub fn reload_categories(&mut self) {        if let Some(conn) = &self.conn {
+    /// 重新从数据库加载分类列表，并顺带刷新「全部 / 未分类」的计数
+    pub fn reload_categories(&mut self) {
+        if let Some(conn) = &self.conn {
             self.state.categories = db::get_categories(conn).unwrap_or_default();
+            if let Ok((total, uncategorized)) = db::get_counts(conn) {
+                self.state.total_count = total;
+                self.state.uncategorized_count = uncategorized;
+            }
         }
     }
 
@@ -665,6 +795,65 @@ impl App {
     }
 
     /// 删除一批表情包：先删数据库记录，再删本地图库副本（原导入文件不受影响）。
+    /// 在改动分类归属之前，把这批图「当前」的归属记进撤销栈。
+    fn push_category_undo(&mut self, ids: &[i64]) {
+        let before: Vec<(i64, Vec<i64>)> = self
+            .state
+            .emojis
+            .iter()
+            .filter(|e| ids.contains(&e.id))
+            .map(|e| (e.id, e.category_ids.clone()))
+            .collect();
+        if before.is_empty() {
+            return;
+        }
+        self.state.undo_stack.push(CategoryUndo { before });
+        // 只保留最近 50 步
+        if self.state.undo_stack.len() > 50 {
+            self.state.undo_stack.remove(0);
+        }
+    }
+
+    /// Ctrl+Z：撤销最近一次分类归属变更（只恢复分类，不动图片/名称/排序）。
+    fn undo_last(&mut self) {
+        let Some(undo) = self.state.undo_stack.pop() else {
+            self.toast("没有可撤销的操作".to_owned());
+            return;
+        };
+        if let Some(conn) = &self.conn {
+            for (id, categories) in &undo.before {
+                if let Err(err) = db::set_emoji_categories(conn, *id, categories) {
+                    eprintln!("[db] 撤销分类失败: {err}");
+                }
+            }
+        }
+        self.reload_categories();
+        self.reload_emojis();
+        self.toast(format!("已撤销 {} 张的分类变更", undo.before.len()));
+    }
+
+    /// 从历史视图移除一批图：只清 last_used_at，图片和图库记录都保留。
+    fn remove_from_history(&mut self, ids: &[i64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let result = self.conn.as_ref().map(|conn| db::clear_history(conn, ids));
+        match result {
+            Some(Ok(())) => {
+                self.state.batch_selected.clear();
+                self.reload_categories();
+                self.reload_emojis();
+                self.toast(format!("已从历史移除 {} 张", ids.len()));
+            }
+            Some(Err(err)) => {
+                eprintln!("[db] 从历史移除失败: {err}");
+                self.toast("从历史移除失败".to_owned());
+            }
+            None => {}
+        }
+    }
+
+    /// 删除一批表情包：先删数据库记录，再删本地图库副本（原导入文件不受影响）。
     fn delete_emoji_ids(&mut self, ids: &[i64]) {
         let emojis: Vec<db::Emoji> = self
             .state
@@ -743,6 +932,7 @@ impl App {
 
     /// 把一批图加入某个分类（多分类：原有分类保留）。
     fn add_to_category(&mut self, ids: &[i64], category_id: i64) {
+        self.push_category_undo(ids);
         let result = self
             .conn
             .as_ref()
@@ -769,6 +959,7 @@ impl App {
 
     /// 把一批图从某个分类移出（其他分类保留）。
     fn remove_from_category(&mut self, ids: &[i64], category_id: i64) {
+        self.push_category_undo(ids);
         let result = self
             .conn
             .as_ref()
@@ -809,6 +1000,7 @@ impl App {
                 match current {
                     Some(cid) => self.remove_from_category(&[id], cid),
                     None => {
+                        self.push_category_undo(&[id]);
                         let result = self
                             .conn
                             .as_ref()
@@ -856,15 +1048,45 @@ impl App {
                     &self.state.emojis,
                 ));
             }
+            ui::batch_bar::BatchAction::Pin(pinned) => {
+                let ids: Vec<i64> = self.state.batch_selected.iter().copied().collect();
+                if ids.is_empty() {
+                    return;
+                }
+                let result = self
+                    .conn
+                    .as_ref()
+                    .map(|conn| db::set_emojis_pinned(conn, &ids, pinned));
+                match result {
+                    Some(Ok(())) => {
+                        self.toast(if pinned {
+                            format!("已置顶 {} 张", ids.len())
+                        } else {
+                            format!("已取消置顶 {} 张", ids.len())
+                        });
+                        self.reload_emojis();
+                    }
+                    Some(Err(err)) => {
+                        eprintln!("[db] 批量置顶失败: {err}");
+                        self.toast("批量置顶失败".to_owned());
+                    }
+                    None => {}
+                }
+            }
             ui::batch_bar::BatchAction::Delete => {
                 let ids: Vec<i64> = self.state.batch_selected.iter().copied().collect();
                 if ids.is_empty() {
                     return;
                 }
-                self.state.delete_dialog = Some(ui::delete_dialog::DeleteDialog {
-                    ids: ids.clone(),
-                    name: format!("选中的 {} 张", ids.len()),
-                });
+                // 历史视图：只移除历史记录，不删图片
+                if matches!(self.state.selected, BrowseKey::History) {
+                    self.remove_from_history(&ids);
+                } else {
+                    self.state.delete_dialog = Some(ui::delete_dialog::DeleteDialog {
+                        ids: ids.clone(),
+                        name: format!("选中的 {} 张", ids.len()),
+                    });
+                }
             }
         }
     }
@@ -1109,7 +1331,20 @@ impl eframe::App for App {
         false
     }
 
+    /// 退出时移除托盘图标、注销全局快捷键（否则托盘里会留一个死图标）。
+    fn on_exit(&mut self) {
+        #[cfg(windows)]
+        if let Some(hwnd) = self.hwnd {
+            crate::core::tray::remove(windows::Win32::Foundation::HWND(hwnd as _));
+        }
+        self.flush_ui_settings();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // 记录主窗口屏幕矩形：设置窗口首次打开时放在它右侧
+        if let Some(rect) = ui.ctx().input(|i| i.viewport().outer_rect) {
+            self.state.main_rect = Some(rect);
+        }
         // 样式（配色/圆角/字号）必须在画任何面板之前应用：
         // 否则会出现「有的面板已按新配色、有的还是旧配色」的混搭画面。
         let style_key = (
@@ -1144,6 +1379,75 @@ impl eframe::App for App {
             snap::install(frame);
         }
 
+        // 第一帧：装托盘图标 + 注册全局快捷键
+        #[cfg(windows)]
+        if !self.tray_installed {
+            if let Some(hwnd) = window_hwnd(frame) {
+                self.hwnd = Some(hwnd);
+                let result = crate::core::tray::install(
+                    windows::Win32::Foundation::HWND(hwnd as _),
+                    &self.state.hotkey,
+                );
+                self.tray_installed = true;
+                self.tray_ok = result.icon_added;
+                self.hotkey_ok = result.hotkey_ok;
+                if !result.icon_added {
+                    eprintln!("[tray] 托盘图标添加失败（系统 shell 拒绝注册，见 data/tray.log）");
+                    // 图标加不上也能用：热键仍可唤出，所以关闭=隐藏依然安全
+                    self.toast(if result.hotkey_ok {
+                        "托盘图标不可用（系统 shell 拒绝），但 Alt+` 可唤回，关闭仍会隐藏".to_owned()
+                    } else {
+                        "托盘和快捷键都不可用，关闭按钮将直接退出".to_owned()
+                    });
+                }
+            }
+        }
+
+        // 关闭请求：默认收进托盘（真正退出走托盘菜单「退出」）
+        if ui.ctx().input(|i| i.viewport().close_requested()) {
+            if self.state.minimize_to_tray
+                && (self.tray_ok || self.hotkey_ok)
+                && !self.quit_requested
+            {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.state.window_hidden = true;
+            }
+        }
+
+        // 托盘图标 / 全局快捷键产生的动作
+        #[cfg(windows)]
+        {
+            use crate::core::tray::TrayAction;
+            // 快捷键可能在设置里改过：每帧调用，没变时内部直接返回
+            if let Some(hwnd) = self.hwnd {
+                let ok = crate::core::tray::register_hotkey(
+                    windows::Win32::Foundation::HWND(hwnd as _),
+                    &self.state.hotkey,
+                );
+                // 让设置里的提示跟着真实注册结果走（组合非法/被占用时显示红字）
+                self.state.hotkey_valid = Some(ok);
+            }
+            for action in crate::core::tray::take_actions() {
+                match action {
+                    TrayAction::Quit => {
+                        self.quit_requested = true;
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+        }
+
+        // Ctrl+Z：撤销最近一次分类归属变更（输入框有焦点时让输入框自己处理）
+        let typing = ui.ctx().memory(|m| m.focused().is_some());
+        if !typing
+            && ui
+                .ctx()
+                .input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z))
+        {
+            self.undo_last();
+        }
+
         // 窗口位置/尺寸由 eframe 持久化（persist_window 默认开启），滚动位置不持久化
 
         // 拖入窗口的文件 / 文件夹：直接导入到当前分类
@@ -1168,7 +1472,15 @@ impl eframe::App for App {
         if let Some(action) = ui::batch_bar::show(ui, &mut self.state) {
             self.handle_batch_action(action);
         }
-        ui::sidebar::show(ui, &mut self.state);
+        if let Some(order) = ui::sidebar::show(ui, &mut self.state) {
+            // 侧栏拖动改了分类顺序：写库后重载（sort_order 按 0..n 重排）
+            if let Some(conn) = &self.conn {
+                if let Err(err) = db::set_category_orders(conn, &order) {
+                    eprintln!("[db] 保存分类顺序失败: {err}");
+                }
+            }
+            self.reload_categories();
+        }
 
         // 导入小窗：选完「文件 / 文件夹」后打开原生文件对话框
         if let Some(choice) = ui::import_dialog::show(ui.ctx(), &mut self.state) {
@@ -1231,6 +1543,10 @@ impl eframe::App for App {
         if let Some((ids, category_id)) = grid_action.remove_from_category {
             self.remove_from_category(&ids, category_id);
         }
+        // 历史视图里右键「从历史移除」：只清历史记录，不删图片
+        if let Some(ids) = grid_action.remove_from_history {
+            self.remove_from_history(&ids);
+        }
         // 批量模式：单击切换勾选
         if let Some(id) = grid_action.toggle_select {
             if self.state.batch_selected.contains(&id) {
@@ -1253,7 +1569,8 @@ impl eframe::App for App {
             self.reorder_emoji(id, target);
         }
 
-        ui::settings::show(ui.ctx(), &mut self.state);
+        // 设置：独立窗口（真正独立的 OS 窗口，不受主窗口大小限制）
+        ui::settings::show_window(ui.ctx(), &mut self.state);
 
         // 首次启动的欢迎公告：关掉后把「看过这一版内容」的哈希写进库，改文案后会自动再弹
         if ui::welcome::show(ui.ctx(), &mut self.state) {
@@ -1497,6 +1814,10 @@ mod app_tests {
             edge_snap: false,
             font_path: Some("C:\\fonts\\test.ttf".to_owned()),
             font_name: Some("测试字体".to_owned()),
+            scroll_speed: 2.5,
+            hotkey: "Ctrl+Alt+E".to_owned(),
+            minimize_to_tray: false,
+            settings_pos: Some([320.0, 180.0]),
         };
         let raw = serde_json::to_string(&saved).unwrap();
         db::set_setting(&conn, "ui.settings", &raw).unwrap();

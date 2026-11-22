@@ -34,6 +34,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
     "Win32_System_Variant",
     "Win32_UI_Shell",
+    # 托盘图标需要 GetModuleHandleW 取 exe 内嵌图标
+    "Win32_System_LibraryLoader",
     # OLE 拖放（原生拖出，默认未启用）
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",

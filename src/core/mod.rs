@@ -21,3 +21,6 @@ pub mod shell;
 #[allow(dead_code, unused_imports)]
 pub mod drag_out;
 pub mod welcome_config;
+
+/// 系统托盘图标 + 全局快捷键（仅 Windows）
+pub mod tray;

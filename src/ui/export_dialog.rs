@@ -31,7 +31,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<ExportScope> {
         .collapsible(false)
         .resizable(false)
         .frame(frame)
-        .default_width(280.0)
+        .default_width(theme::dialog_size(ctx, 280.0).0)
+        .max_width(theme::dialog_size(ctx, 280.0).0)
+        .max_height(theme::dialog_size(ctx, 280.0).1)
         .default_pos(ctx.viewport_rect().center() - egui::vec2(140.0, 140.0))
         .show(ctx, |ui| {
             ui.label(
@@ -41,7 +43,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<ExportScope> {
             );
             ui.add_space(theme::SPACE_XS);
 
-            if theme::list_item(ui, "全部表情包", None, false, false, p).clicked() {
+            if theme::list_item(ui, "全部表情包", None, false, false, false, p).clicked() {
                 action = Some(ExportScope::All);
                 close = true;
             }
@@ -65,6 +67,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<ExportScope> {
                                 ui,
                                 &category.name,
                                 Some(category.count),
+                                false,
                                 false,
                                 false,
                                 p,

@@ -121,6 +121,15 @@ pub const SPACE_MD: f32 = 12.0;
 /// 统一圆角（默认值）
 pub const RADIUS: f32 = 8.0;
 
+/// 弹窗尺寸约束：宽高都不超过主窗口（留 32px 边距），
+/// 避免主窗口缩到最小时弹窗被屏幕裁切、按钮点不到。
+pub fn dialog_size(ctx: &egui::Context, default_width: f32) -> (f32, f32) {
+    let viewport = ctx.viewport_rect();
+    let width = default_width.min((viewport.width() - 32.0).max(200.0));
+    let max_height = (viewport.height() - 32.0).max(160.0);
+    (width, max_height)
+}
+
 // ---------------- 应用 ----------------
 
 /// 用指定调色板、圆角、字号重建全局 Style。
@@ -254,6 +263,30 @@ pub fn pill_button(
     response
 }
 
+/// 把文本截到给定宽度内，超出部分用「…」代替（单行显示用）。
+pub fn ellipsize(
+    painter: &egui::Painter,
+    text: &str,
+    font: &egui::FontId,
+    max_width: f32,
+) -> String {
+    let full = painter.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE);
+    if full.size().x <= max_width {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut end = chars.len();
+    while end > 0 {
+        let candidate: String = chars[..end].iter().collect::<String>() + "…";
+        let galley = painter.layout_no_wrap(candidate.clone(), font.clone(), Color32::WHITE);
+        if galley.size().x <= max_width {
+            return candidate;
+        }
+        end -= 1;
+    }
+    "…".to_owned()
+}
+
 /// 自绘全宽列表项（侧栏分类用），右对齐显示附加计数。
 ///
 /// `dragging`：有卡片正在被拖动时传 true；指针悬停在本行会显示拖放高亮
@@ -264,15 +297,50 @@ pub fn list_item(
     count: Option<i64>,
     selected: bool,
     dragging: bool,
+    draggable: bool,
     p: &Palette,
 ) -> egui::Response {
     let height = 28.0;
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    let sense = if draggable {
+        egui::Sense::click_and_drag()
+    } else {
+        egui::Sense::click()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), sense);
 
-    let hovered = response.hovered();
+    paint_list_item(
+        ui,
+        rect,
+        label,
+        count,
+        selected,
+        dragging,
+        response.hovered(),
+        response.contains_pointer(),
+        p,
+    );
+    response
+}
+
+/// 在给定矩形上画一个列表项（不分配布局）。
+///
+/// 单独拆出来是为了做「拖动排序时其他行平滑让位」：
+/// 行位置由调用方按动画偏移算好后，只借用这里的绘制。
+#[allow(clippy::too_many_arguments)]
+pub fn paint_list_item(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    count: Option<i64>,
+    selected: bool,
+    dragging: bool,
+    hovered: bool,
+    contains_pointer: bool,
+    p: &Palette,
+) {
     // 拖拽时 hovered 可能被拖动的源控件抢走，用指针位置直接判断
-    let drop_hover = dragging && response.contains_pointer();
+    let drop_hover = dragging && contains_pointer;
     let fill = if selected {
         p.bg_selected
     } else if drop_hover {
@@ -305,10 +373,14 @@ pub fn list_item(
     } else {
         p.text_secondary
     };
+    // 名字过长时截断：窄侧栏下不能压到右边的计数
+    let count_space = if count.is_some() { 46.0 } else { 0.0 };
+    let label_width = (rect.width() - 10.0 - count_space).max(16.0);
+    let shown = ellipsize(painter, label, &font, label_width);
     painter.text(
         rect.left_center() + egui::vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
-        label,
+        shown,
         font,
         text_color,
     );
@@ -324,6 +396,4 @@ pub fn list_item(
             text_color,
         );
     }
-
-    response
 }

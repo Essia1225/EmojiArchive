@@ -71,7 +71,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<MoveAction> {
         .collapsible(false)
         .resizable(false)
         .frame(frame)
-        .default_width(260.0)
+        .default_width(theme::dialog_size(ctx, 260.0).0)
+        .max_width(theme::dialog_size(ctx, 260.0).0)
+        .max_height(theme::dialog_size(ctx, 260.0).1)
         .default_pos(ctx.viewport_rect().center() - egui::vec2(130.0, 120.0))
         .show(ctx, |ui| {
             // 表情包名称只作参考，长名字自动换行
@@ -205,7 +207,7 @@ fn category_row(
     let count_w = if count.is_some() { 44.0 } else { 0.0 };
     let avail = (rect.right() - count_w - 8.0 - text_left).max(12.0);
     let font = egui::FontId::proportional(14.0);
-    let shown = ellipsize(painter, label, &font, avail);
+    let shown = theme::ellipsize(painter, label, &font, avail);
     let galley = painter.layout_no_wrap(shown, font, p.text_primary);
     painter.galley(
         egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
@@ -231,27 +233,3 @@ fn category_row(
     response
 }
 
-/// 把文本截到给定宽度内，超出部分用「…」代替（单行显示用）。
-fn ellipsize(
-    painter: &egui::Painter,
-    text: &str,
-    font: &egui::FontId,
-    max_width: f32,
-) -> String {
-    let full = painter.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE);
-    if full.size().x <= max_width {
-        return text.to_owned();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut end = chars.len();
-    while end > 0 {
-        let candidate: String = chars[..end].iter().collect::<String>() + "…";
-        let galley =
-            painter.layout_no_wrap(candidate.clone(), font.clone(), egui::Color32::WHITE);
-        if galley.size().x <= max_width {
-            return candidate;
-        }
-        end -= 1;
-    }
-    "…".to_owned()
-}

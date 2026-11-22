@@ -41,7 +41,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<DeleteAction> {
         .collapsible(false)
         .resizable(false)
         .frame(frame)
-        .default_width(320.0)
+        .default_width(theme::dialog_size(ctx, 320.0).0)
+        .max_width(theme::dialog_size(ctx, 320.0).0)
+        .max_height(theme::dialog_size(ctx, 320.0).1)
         .default_pos(ctx.viewport_rect().center() - egui::vec2(160.0, 80.0))
         .show(ctx, |ui| {
             ui.label(

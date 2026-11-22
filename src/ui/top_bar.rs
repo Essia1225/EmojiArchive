@@ -44,6 +44,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> Option<TopBarAction> {
 
         let avail = ui.available_width();
         let buttons_w = buttons_width(ui, state, p, avail);
+
         // 窗口较窄：隐藏标题、压缩搜索框，保证按钮不压到搜索框
         let compact = avail < 900.0;
         let title_w = if compact { 0.0 } else { 130.0 };
@@ -93,25 +94,57 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> Option<TopBarAction> {
                 ui.add_space(remaining);
             }
 
-            // 窄窗口：排序 / 批量 / 「更多」下拉（导入、导出、置顶、设置）
+            // 窄窗口分两档：
+            //  < 560：排序 / 批量 + 「更多」
+            //  < 420（超窄）：只留「更多」，排序/批量也收进菜单，否则按钮会被窗口裁掉
+            let ultra_narrow = avail < 420.0;
             if avail < 560.0 {
-                if theme::pill_button(ui, "排序", state.sort_mode, true, p).clicked() {
-                    state.sort_mode = !state.sort_mode;
-                    if state.sort_mode {
-                        state.batch_mode = false;
-                        state.batch_selected.clear();
+                if !ultra_narrow {
+                    if theme::pill_button(ui, "排序", state.sort_mode, true, p).clicked() {
+                        state.sort_mode = !state.sort_mode;
+                        if state.sort_mode {
+                            state.batch_mode = false;
+                            state.batch_selected.clear();
+                        }
                     }
-                }
-                if theme::pill_button(ui, "批量", state.batch_mode, true, p).clicked() {
-                    state.batch_mode = !state.batch_mode;
-                    if state.batch_mode {
-                        state.sort_mode = false;
-                    } else {
-                        state.batch_selected.clear();
+                    if theme::pill_button(ui, "批量", state.batch_mode, true, p).clicked() {
+                        state.batch_mode = !state.batch_mode;
+                        if state.batch_mode {
+                            state.sort_mode = false;
+                        } else {
+                            state.batch_selected.clear();
+                        }
                     }
                 }
                 ui.menu_button("更多", |ui| {
-                    ui.set_min_width(96.0);
+                    ui.set_min_width(110.0);
+                    if ultra_narrow {
+                        // 超窄时把两个模式开关也放进菜单，用勾选态表示当前状态
+                        if ui
+                            .selectable_label(state.sort_mode, "排序模式")
+                            .clicked()
+                        {
+                            state.sort_mode = !state.sort_mode;
+                            if state.sort_mode {
+                                state.batch_mode = false;
+                                state.batch_selected.clear();
+                            }
+                            ui.close();
+                        }
+                        if ui
+                            .selectable_label(state.batch_mode, "批量模式")
+                            .clicked()
+                        {
+                            state.batch_mode = !state.batch_mode;
+                            if state.batch_mode {
+                                state.sort_mode = false;
+                            } else {
+                                state.batch_selected.clear();
+                            }
+                            ui.close();
+                        }
+                        ui.separator();
+                    }
                     if ui.button("导入").clicked() {
                         action = Some(TopBarAction::Import);
                         ui.close();
@@ -137,7 +170,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> Option<TopBarAction> {
                         ui.close();
                     }
                     if ui.button("设置").clicked() {
-                        state.show_settings = !state.show_settings;
+                        crate::ui::settings::toggle(ui.ctx(), state);
                         ui.close();
                     }
                 });
@@ -191,7 +224,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> Option<TopBarAction> {
                 ui.separator();
 
                 if theme::pill_button(ui, "设置", state.show_settings, true, p).clicked() {
-                    state.show_settings = !state.show_settings;
+                    crate::ui::settings::toggle(ui.ctx(), state);
                 }
             }
         });
@@ -208,8 +241,12 @@ fn buttons_width(ui: &egui::Ui, state: &AppState, p: &theme::Palette, avail: f32
     } else {
         "置顶"
     };
+    let ultra_narrow = avail < 420.0;
     let narrow = avail < 560.0;
-    let labels: Vec<&str> = if narrow {
+    let labels: Vec<&str> = if ultra_narrow {
+        // 超窄：只剩「更多」
+        vec!["更多"]
+    } else if narrow {
         vec!["排序", "批量", "更多"]
     } else {
         vec!["排序", "批量", "导入", "导出", pin, "设置"]

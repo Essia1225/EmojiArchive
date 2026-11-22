@@ -94,6 +94,8 @@ pub struct GridAction {
     pub drop_move: Option<(i64, DropTarget)>,
     /// 右键「从当前分类移除」：(ids, 当前分类 id)
     pub remove_from_category: Option<(Vec<i64>, i64)>,
+    /// 历史视图里的「从历史移除」：只清 last_used_at，不删图片
+    pub remove_from_history: Option<Vec<i64>>,
     /// 批量模式：单击切换勾选
     pub toggle_select: Option<i64>,
     /// 批量模式：框选松手时要勾选的 id
@@ -161,6 +163,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> GridAction {
     let categories = &state.categories;
     let sidebar_targets = &state.sidebar_targets;
     let show_names = state.show_names;
+    let scroll_speed = state.scroll_speed;
     let sort_mode = state.sort_mode;
     let batch_mode = state.batch_mode;
     let has_categories = !categories.is_empty();
@@ -169,6 +172,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> GridAction {
         crate::BrowseKey::Category(id) => Some(id),
         _ => None,
     };
+    // 历史视图下「删除」的含义不同：只把图从历史里移除，不删图片
+    let browse_is_history = matches!(state.selected, crate::BrowseKey::History);
     let grid = &mut state.grid;
     let rename_dialog = &mut state.rename_dialog;
     let rename_input = &mut state.rename_input;
@@ -218,6 +223,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> GridAction {
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
+                // 滚轮灵敏度可在设置里调（默认比 egui 原生快一点）
+                .wheel_scroll_multiplier(egui::vec2(1.0, scroll_speed))
+                // 滚动条始终占位可见：窄窗口下不会被卡片盖住，也不因出现/消失抖动列数
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .show_rows(ui, cell_h, rows, |ui, range| {
                     content_clip = Some(ui.clip_rect());
                     // 保存本帧可见行范围与内容原点：闭包外的卡片交互（从图片上拖动框选）也要用
@@ -709,7 +718,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> GridAction {
 
                     ui.separator();
 
-                    if ui
+                    if browse_is_history {
+                        // 历史视图：只把这张（或这批）从历史记录里移除，图片本身保留
+                        if ui.button("从历史移除").clicked() {
+                            action.remove_from_history = Some(match &batch_scope {
+                                Some(ids) => ids.clone(),
+                                None => vec![e.id],
+                            });
+                            ui.close();
+                        }
+                    } else if ui
                         .button(egui::RichText::new("删除").color(p.danger))
                         .clicked()
                     {
@@ -815,9 +833,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> GridAction {
             }
 
             // 拖动中：指针旁提示松手会落到哪里（分类名 / 复制），并持续重绘
-            if drag.is_some() {
+            if let Some(dragged) = drag.as_ref() {
+                // 被拖卡片已经属于哪些分类（落在这些分类上时不该提示「加入」）
+                let dragged_categories: Vec<i64> = emojis
+                    .iter()
+                    .find(|e| e.id == dragged.id)
+                    .map(|e| e.category_ids.clone())
+                    .unwrap_or_default();
                 if let Some(pos) = pointer {
-                    draw_drag_hint(&ctx, p, pos, sidebar_targets, categories, "松开复制");
+                    draw_drag_hint(
+                        &ctx,
+                        p,
+                        pos,
+                        sidebar_targets,
+                        categories,
+                        &dragged_categories,
+                        "松开复制",
+                    );
                 }
                 // 窗口外松手时 egui 可能收不到 drag_stopped：兜底也复制到剪贴板，
                 // 保证「拖到窗口外松手」后仍能 Ctrl+V 粘贴。
@@ -829,9 +861,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> GridAction {
                 ctx.request_repaint();
             }
             // 排序模式拖动同理：分类行高亮由 sidebar 按 sort_drag 显示
-            if sort_drag.is_some() {
+            if let Some(dragged_id) = *sort_drag {
+                let dragged_categories: Vec<i64> = emojis
+                    .iter()
+                    .find(|e| e.id == dragged_id)
+                    .map(|e| e.category_ids.clone())
+                    .unwrap_or_default();
                 if let Some(pos) = pointer {
-                    draw_drag_hint(&ctx, p, pos, sidebar_targets, categories, "松开换位");
+                    draw_drag_hint(
+                        &ctx,
+                        p,
+                        pos,
+                        sidebar_targets,
+                        categories,
+                        &dragged_categories,
+                        "松开换位",
+                    );
                 }
                 // 拖到窗口外松手时清掉排序拖动状态，避免一直卡在拖动
                 if !ctx.input(|i| i.pointer.primary_down()) {
@@ -965,18 +1010,27 @@ fn target_name(target: DropTarget, categories: &[crate::core::db::Category]) -> 
 
 /// 拖动中跟随指针的小提示：落在分类上显示「加入 XX」，否则显示 `fallback`
 /// （普通模式=松开复制，排序模式=松开换位）。
+///
+/// `dragged_categories`：被拖卡片已经属于哪些分类。落在它**已经在的分类**上时
+/// 不能提示「加入」（加入是空操作），改成「已在「X」中」并且不高亮。
 fn draw_drag_hint(
     ctx: &egui::Context,
     p: &theme::Palette,
     pos: egui::Pos2,
     targets: &[(DropTarget, Rect)],
     categories: &[crate::core::db::Category],
+    dragged_categories: &[i64],
     fallback: &str,
 ) {
     let target = hit_drop_target(targets, pos);
     let (label, on_target) = match target {
         // 「未分类」不是分类，落上去的含义是「从当前分类移出」
         Some(DropTarget::Uncategorized) => ("移出当前分类".to_owned(), true),
+        // 已经在目标分类里：不提示「加入」，也不高亮（松手不会产生任何变化）
+        Some(DropTarget::Category(id)) if dragged_categories.contains(&id) => (
+            format!("已在「{}」中", target_name(target.unwrap(), categories)),
+            false,
+        ),
         Some(t) => (format!("加入 {}", target_name(t, categories)), true),
         None => (fallback.to_owned(), false),
     };

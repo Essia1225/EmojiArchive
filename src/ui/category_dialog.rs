@@ -43,7 +43,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<CategoryAction>
         .collapsible(false)
         .resizable(false)
         .frame(frame)
-        .default_width(260.0)
+        .default_width(theme::dialog_size(ctx, 260.0).0)
+        .max_width(theme::dialog_size(ctx, 260.0).0)
+        .max_height(theme::dialog_size(ctx, 260.0).1)
         .default_pos(ctx.viewport_rect().center() - egui::vec2(130.0, 70.0))
         .show(ctx, |ui| match dialog {
             CategoryDialog::Create => {
@@ -76,14 +78,13 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<CategoryAction>
                     }
                 });
             }
-            CategoryDialog::Rename { id, name } => {
+            CategoryDialog::Rename { id, name: _ } => {
                 // 在 TextEdit 之前消费 Enter：焦点不在输入框时也能提交
                 let enter =
                     ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                // 原名在打开对话框时就已写进 category_input（见 sidebar），
+                // 这里不要再回填：否则用户清空输入后会立刻被塞回原名。
                 let mut input = state.category_input.clone();
-                if state.category_input.is_empty() {
-                    input = name;
-                }
                 ui.add(
                     egui::TextEdit::singleline(&mut input)
                         .hint_text("分类名称")

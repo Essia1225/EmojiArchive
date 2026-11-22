@@ -323,6 +323,20 @@ pub fn get_categories(conn: &Connection) -> Result<Vec<Category>> {
     rows.collect()
 }
 
+/// 侧栏「全部 / 未分类」用的两个总数：(图片总数, 未分类数)。
+///
+/// 分类视图的计数由 [`get_categories`] 一起带出；这两个不是分类，单独查。
+pub fn get_counts(conn: &Connection) -> Result<(i64, i64)> {
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM emojis", [], |row| row.get(0))?;
+    let uncategorized: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM emojis e
+         WHERE NOT EXISTS (SELECT 1 FROM emoji_categories ec WHERE ec.emoji_id = e.id)",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((total, uncategorized))
+}
+
 /// 新建或重命名分类。
 /// - `id = None`：新建
 /// - `id = Some(id)`：重命名
@@ -361,6 +375,18 @@ pub fn save_category(conn: &Connection, id: Option<i64>, name: &str) -> Result<i
 pub fn delete_category(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM categories WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+/// 按给定顺序批量写入分类的 `sort_order`（0..n），用于侧栏拖动排序。
+pub fn set_category_orders(conn: &Connection, ordered_ids: &[i64]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (index, id) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE categories SET sort_order = ?1 WHERE id = ?2",
+            params![index as i64, id],
+        )?;
+    }
+    tx.commit()
 }
 
 // ---------------- 表情包 ----------------
@@ -533,6 +559,34 @@ fn parse_id_list(joined: Option<&str>) -> Vec<i64> {
         .collect()
 }
 
+/// 把一条图所属的分类「整体替换」成给定集合（用于撤销：恢复变更前的归属）。
+pub fn set_emoji_categories(conn: &Connection, id: i64, category_ids: &[i64]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM emoji_categories WHERE emoji_id = ?1",
+        params![id],
+    )?;
+    for category_id in category_ids {
+        tx.execute(
+            "INSERT OR IGNORE INTO emoji_categories (emoji_id, category_id) VALUES (?1, ?2)",
+            params![id, category_id],
+        )?;
+    }
+    tx.commit()
+}
+
+/// 把一批图从「历史」里移除：只把 `last_used_at` 清 0，不删记录、不删文件。
+pub fn clear_history(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for id in ids {
+        tx.execute(
+            "UPDATE emojis SET last_used_at = 0 WHERE id = ?1",
+            params![id],
+        )?;
+    }
+    tx.commit()
+}
+
 /// 记录一次「使用」（复制到剪贴板），用于「历史」视图。
 pub fn mark_emoji_used(conn: &Connection, id: i64) -> Result<()> {
     conn.execute(
@@ -549,6 +603,18 @@ pub fn rename_emoji(conn: &Connection, id: i64, name: &str) -> Result<()> {
         params![name, id],
     )?;
     Ok(())
+}
+
+/// 批量置顶 / 取消置顶（一个事务写完）。
+pub fn set_emojis_pinned(conn: &Connection, ids: &[i64], pinned: bool) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for id in ids {
+        tx.execute(
+            "UPDATE emojis SET is_pinned = ?1 WHERE id = ?2",
+            params![i64::from(pinned), id],
+        )?;
+    }
+    tx.commit()
 }
 
 /// 置顶 / 取消置顶。置顶的会排在列表最前（查询已按 is_pinned DESC 排序）。
@@ -906,6 +972,33 @@ mod tests {
             1
         );
     }
+}
+
+/// 从历史移除只清 last_used_at：历史里没了，但图片记录还在、全部视图里仍能看到。
+#[test]
+fn clear_history_keeps_emoji() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let id = insert_emoji(
+        &conn,
+        &NewEmoji {
+            name: "h",
+            file_path: "emojis/h.gif",
+            thumb_path: None,
+            file_ext: "gif",
+            file_hash: "hash-h",
+            category_ids: &[],
+        },
+    )
+    .unwrap();
+
+    mark_emoji_used(&conn, id).unwrap();
+    assert_eq!(get_emojis(&conn, EmojiScope::History, "").unwrap().len(), 1);
+
+    clear_history(&conn, &[id]).unwrap();
+    assert!(get_emojis(&conn, EmojiScope::History, "").unwrap().is_empty());
+    // 图片本身没被删
+    assert_eq!(get_emojis(&conn, EmojiScope::All, "").unwrap().len(), 1);
 }
 
 /// 历史：只包含使用过的图，按最近使用时间倒序。

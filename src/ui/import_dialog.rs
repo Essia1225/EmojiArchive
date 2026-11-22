@@ -52,7 +52,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<ImportChoice> {
         .collapsible(false)
         .resizable(false)
         .frame(frame)
-        .default_width(300.0)
+        .default_width(theme::dialog_size(ctx, 300.0).0)
+        .max_width(theme::dialog_size(ctx, 300.0).0)
+        .max_height(theme::dialog_size(ctx, 300.0).1)
         .default_pos(ctx.viewport_rect().center() - egui::vec2(150.0, 90.0))
         .show(ctx, |ui| {
             ui.label(egui::RichText::new(format!("导入到：{target}")).color(p.text_secondary));

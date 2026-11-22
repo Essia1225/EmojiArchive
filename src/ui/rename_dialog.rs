@@ -40,7 +40,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Option<RenameAction> {
         .collapsible(false)
         .resizable(false)
         .frame(frame)
-        .default_width(300.0)
+        .default_width(theme::dialog_size(ctx, 300.0).0)
+        .max_width(theme::dialog_size(ctx, 300.0).0)
+        .max_height(theme::dialog_size(ctx, 300.0).1)
         .default_pos(ctx.viewport_rect().center() - egui::vec2(150.0, 80.0))
         .show(ctx, |ui| {
             // 在 TextEdit 之前消费 Enter：焦点不在输入框时也能提交
